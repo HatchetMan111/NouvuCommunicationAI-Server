@@ -7,13 +7,13 @@ Novu macht Multi-Channel-Notifications (In-App, E-Mail, SMS, Push, Chat) über e
 ## 🚀 Installation (Einzeiler, auf dem Proxmox-Host als root)
 
 ```bash
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/Novu-Proxmox/main/install/novu.sh)"
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuCommunicationAI-Server/main/install/novu.sh)"
 ```
 
 **Mit Optionen** (hinter dem schließenden Anführungszeichen anhängen):
 
 ```bash
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/Novu-Proxmox/main/install/novu.sh)" --id 210 --port 4000
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuCommunicationAI-Server/main/install/novu.sh)" --id 210 --port 4000
 ```
 
 Das Script:
@@ -42,16 +42,16 @@ Die URL fürs Dashboard lautet: `http://<LXC-IP>:4000` (IP wird am Ende der Inst
 
 ```bash
 # Status (Service, Stack-Container, Version, Signup-Status, URLs)
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/Novu-Proxmox/main/install/novu.sh)" --status
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuCommunicationAI-Server/main/install/novu.sh)" --status
 
 # Update (Images neu ziehen, Secrets/Daten bleiben erhalten)
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/Novu-Proxmox/main/install/novu.sh)" --update
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuCommunicationAI-Server/main/install/novu.sh)" --update
 
 # Deinstallieren (Container + ALLE Daten löschen; --yes überspringt Rückfrage)
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/Novu-Proxmox/main/install/novu.sh)" --uninstall --yes
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuCommunicationAI-Server/main/install/novu.sh)" --uninstall --yes
 
 # Fehlerdiagnose: voller bash -x-Trace
-bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/Novu-Proxmox/main/install/novu.sh)" --debug
+bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuCommunicationAI-Server/main/install/novu.sh)" --debug
 ```
 
 Weitere Optionen: `--id`, `--hostname`, `--storage`, `--rootfs`, `--cores`, `--memory`, `--swap`, `--bridge`, `--ip`, `--gateway`, `--password`, `--sshkey`, `--port`, `--version`, `--force` – siehe `--help`.

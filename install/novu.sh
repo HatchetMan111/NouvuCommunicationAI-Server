@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  📣 Novu – One-Click-Installer (Proxmox VE)
-#  https://github.com/HatchetMan111/Novu-Proxmox
+#  https://github.com/HatchetMan111/NouvuCommunicationAI-Server
 #
 #  Erstellt einen unprivilegierten LXC-Container und installiert darin
 #  Novu (https://github.com/novuhq/novu): die Open-Source-Notification-
@@ -17,7 +17,7 @@
 #  im LAN erreichbar. KEINE Cloud-Dienste, Telemetrie (Sentry/New Relic) AUS.
 #
 #  Installation (auf dem Proxmox-Host als root):
-#    bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/Novu-Proxmox/main/install/novu.sh)"
+#    bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuCommunicationAI-Server/main/install/novu.sh)"
 #
 #  Mit Optionen (direkt hinter dem schließenden Anführungszeichen):
 #    ... " --id 210 --memory 4096 --port 4000
@@ -64,7 +64,7 @@ LOG_FILE="/tmp/${APP_NAME}-installer-$(date +%Y%m%d-%H%M%S).log"
 # Der fertige Einzeiler für Hinweise/Fehlerausgaben – exakt kopierbar (Optionen
 # hinter dem schließenden Anführungszeichen; der Installer erkennt sie via $0-Fallback)
 # shellcheck disable=SC2016  # Absicht: Literal, das zum Ausgeben gedacht ist
-ONE_LINER='bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/Novu-Proxmox/main/install/novu.sh)"'
+ONE_LINER='bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuCommunicationAI-Server/main/install/novu.sh)"'
 
 # ── Farben & Logging ───────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -324,7 +324,7 @@ print_help() {
     cat <<'EOF'
 📣 Novu – Proxmox-Installer (Open-Source-Notification-Infrastruktur, novuhq/novu)
 
-Installation:   bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/Novu-Proxmox/main/install/novu.sh)"
+Installation:   bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuCommunicationAI-Server/main/install/novu.sh)"
 
 Optionen (hinter dem schließenden Anführungszeichen anhängen, z. B. ... " --id 210):
   --id ID          Container-ID (Default: nächste freie ab 200)
