@@ -97,7 +97,8 @@ link_real() { # echte Binaries per Symlink verfügbar halten (Shadowing via PATH
 }
 link_real "$HOSTBIN" bash sh env awk sed grep cut head tail tr od mktemp tee openssl \
     seq cat mv cp rm mkdir chmod dirname basename sort uniq readlink date printf ls touch \
-    stat id uname hostname
+    stat id hostname
+ln -sf "$MK/mock-uname" "$HOSTBIN/uname"
 ln -sf "$MK/mock-curl"  "$HOSTBIN/curl"
 ln -sf "$MK/mock-pct"   "$HOSTBIN/pct"
 ln -sf "$MK/mock-pveam" "$HOSTBIN/pveam"
@@ -128,6 +129,18 @@ unseed_inner_tools() {
 cat > "$MK/mock-sleep" <<'EOF'
 #!/usr/bin/env bash
 exit 0
+EOF
+
+cat > "$MK/mock-uname" <<'EOF'
+#!/usr/bin/env bash
+# uname-Mock (HOST): Arch aus $HS/host_arch (Default x86_64 → amd64-Host)
+set -u
+HS="${HARNESS_STATE:?}"
+if [[ "${1:-}" == "-m" ]]; then
+    cat "$HS/host_arch" 2>/dev/null || echo "x86_64"
+    exit 0
+fi
+echo "Linux novu-host 6.8.0 mock #1 SMP"; exit 0
 EOF
 
 cat > "$MK/mock-pct" <<'EOF'
@@ -169,6 +182,15 @@ case "$cmd" in
         echo "$id running $hostname" >> "$HS/ct_list"
         echo "running" > "$HS/ct_${id}.status"
         echo "$hostname" > "$HS/ct_${id}.hostname"
+        # Spawn-Fail-Grube (Live-Fund 2026-11-19, CT 211 ProxSmartHome):
+        # pct create --start meldet Exit 0, Container läuft TROTZDEM nicht
+        # (Arch-Mismatch). Exit 0 + Status stopped simulieren genau das.
+        if [[ -f "$HS/create_spawn_fail" ]]; then
+            echo "mock: sync_wait: 34 An error occurred in another process (expected sequence number 7)" >&2
+            echo "__lxc_start: 2127 Failed to spawn container \"$id\"" >&2
+            echo "stopped" > "$HS/ct_${id}.status"
+            /bin/sed -i "s|^$id .*|$id stopped $hostname|" "$HS/ct_list"
+        fi
         exit 0 ;;
     start)
         [[ -f "$HS/ct_${id}.status" ]] || { echo "mock: CT $id unbekannt" >&2; exit 2; }
@@ -252,26 +274,31 @@ EOF
 
 cat > "$MK/mock-pveam" <<'EOF'
 #!/usr/bin/env bash
+# pveam-Mock: `available` bietet BEIDE Architekturen an (wie ProxSmartHome:
+# beide Templates im Cache!) – die arch-korrekte Wahl trifft der Installer.
 set -u
 HS="${HARNESS_STATE:?}"
 echo "pveam $*" >> "$HS/calls.log"
-TMPL="local:vztmpl/debian-13-standard_13.2-1_amd64.tar.zst"
 case "${1:-}" in
     list)
-        if [[ -f "$HS/template_downloaded" && ! -f "$HS/pveam_empty" ]]; then
-            echo "$TMPL  123456789"
+        if [[ -s "$HS/downloaded_template" && ! -f "$HS/pveam_empty" ]]; then
+            echo "local:vztmpl/$(cat "$HS/downloaded_template")  123456789"
         fi
         exit 0 ;;
     available)
         if [[ ! -f "$HS/pveam_empty" ]]; then
-            echo "system          $TMPL  123456789"
+            echo "system          debian-13-standard_13.6-1_arm64.tar.zst  999"
+            echo "system          debian-13-standard_13.2-1_amd64.tar.zst  888"
         fi
         exit 0 ;;
     update)   exit 0 ;;
     download)
+        # Aufruf: pveam download <STORE> <vztmpl/NAME.tar.zst>
+        # → $1=download, $2=STORE("local"), $3=NAME
+        tname="${3##*/}"
         mkdir -p "$HS/templates"
-        touch "$HS/templates/debian-13-standard_13.2-1_amd64.tar.zst"
-        touch "$HS/template_downloaded"
+        touch "$HS/templates/$tname"
+        echo "$tname" > "$HS/downloaded_template"
         exit 0 ;;
 esac
 exit 0
@@ -480,6 +507,7 @@ reset_state() {
     echo "$CT_IP" > "$HS/ct_ip"
     : > "$HS/ct_list"
     echo "getent_mode=ok" > "$HS/getent_mode"
+    echo "x86_64" > "$HS/host_arch"      # Default: amd64-Host (aarch64-Cases setzen um)
 }
 run_installer() {
     ( unshare -rm env -i PATH="$HOSTBIN:/usr/sbin:/usr/bin:/sbin:/bin" \
@@ -507,8 +535,9 @@ seed_ct() { # laufender CT mit installiertem Stack
     echo "novu" > "$HS/ct_200.hostname"
     mkdir -p "$MK/opt/novu" "$MK/etc/systemd/system" "$MK/etc" "$MK/var/log"
     seed_inner_tools
-    touch "$HS/stack_up" "$HS/novu_active" "$HS/template_downloaded"
+    touch "$HS/stack_up" "$HS/novu_active"
     touch "$HS/templates/debian-13-standard_13.2-1_amd64.tar.zst"
+    echo "debian-13-standard_13.2-1_amd64.tar.zst" > "$HS/downloaded_template"
     touch "$MK/etc/systemd/system/novu.service"
     write_seed_env
 }
@@ -908,15 +937,42 @@ t "Template komplett fehlend → die"
 reset_state
 touch "$HS/pveam_empty"
 ec=$(run_installer); assert_exit 1 "$ec"
-assert_out "Kein debian-12/13-standard-Template gefunden"
+assert_out "Kein debian-12/13-standard-Template für amd64 gefunden"
 rm -f "$HS/pveam_empty"
 
 t "Template-Download-Pfad (list leer, available da)"
 reset_state
 ec=$(run_installer); assert_exit 0 "$ec"
-assert_out "Kein Debian-12/13-Template vorhanden – lade es herunter"
+assert_out "Kein Debian-12/13-amd64-Template im Cache – lade es herunter"
 assert_calls 1 "pveam download local"
 assert_calls 1 "pct create 200"
+
+t "aarch64-Host wählt ARM64-Template (ProxSmartHome-Grube, Arch-Filter)"
+reset_state; unseed_inner_tools
+echo "aarch64" > "$HS/host_arch"
+ec=$(run_installer); assert_exit 0 "$ec"
+assert_out "Host-Architektur: arm64"
+assert_fcontains "$HS/ct_200.create" "debian-13-standard_13.6-1_arm64.tar.zst"
+assert_no_fcontains "$HS/ct_200.create" "_amd64"
+
+t "amd64-Host wählt NICHT das neuere arm64-Template (Live-Fund CT 211)"
+reset_state; unseed_inner_tools
+echo "x86_64" > "$HS/host_arch"     # available: 13.6-1_arm64 NEUER als 13.2-1_amd64
+ec=$(run_installer); assert_exit 0 "$ec"
+assert_out "Host-Architektur: amd64"
+assert_fcontains "$HS/ct_200.create" "debian-13-standard_13.2-1_amd64.tar.zst"
+assert_no_fcontains "$HS/ct_200.create" "_arm64"
+
+t "Spawn-Fehler trotz pct create Exit 0 → sofort die mit Aufräumen-Hinweis (CT 211-Grube)"
+reset_state; unseed_inner_tools
+touch "$HS/create_spawn_fail"
+ec=$(run_installer); assert_exit 1 "$ec"
+assert_out "Container 200 startet nicht (Status: stopped"
+assert_out "meldete trotzdem Exit 0"
+assert_out "pct destroy 200 --purge"
+# Kein sinnloser IP-Poll (Live: 60 s Wartezeit):
+assert_no_out "Warte auf Netzwerk im Container"
+rm -f "$HS/create_spawn_fail"
 
 t "existierender CT ohne --force → die mit Update-Hinweis"
 seed_ct

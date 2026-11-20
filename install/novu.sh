@@ -30,7 +30,7 @@
 set -Eeuo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="1.0.0"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
+INSTALLER_VERSION="1.0.1"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
 APP_NAME="novu"
 UPSTREAM_OWNER="novuhq"
 UPSTREAM_REPO="novu"
@@ -146,6 +146,20 @@ find_free_id() {
         id=$((id + 1))
     done
     echo "$id"
+}
+
+detect_host_arch() {
+    # Template-Arch muss zur Host-CPU passen – ein Arch-Mismatch spawn-failt
+    # (Live-Fund 2026-11-19, CT 211 ProxSmartHome: rV-Sortierung wählte das
+    # NEUERE arm64-Template auf amd64-Host → "sync_wait: 34 ... Failed to
+    # spawn"). NIEMALS über Architekturen hinweg sortieren!
+    local m
+    m=$(uname -m 2>/dev/null || echo "unknown")
+    case "$m" in
+        x86_64)        echo "amd64" ;;
+        aarch64|armv8*) echo "arm64" ;;
+        *) die "Unbekannte Host-Architektur '$m' – passendes Debian-Template nicht bestimmbar." ;;
+    esac
 }
 
 find_ct_id_by_hostname() {
@@ -825,7 +839,7 @@ Requires=docker.service
 # DETACHED Bootstrap (oneshot): startet/synchronisiert den Stack einmalig
 # (idempotent, wendet .env-Änderungen an). Die DAUERHAFTE Ausfallsicherung
 # übernehmen die Container selbst (restart: unless-stopped in der
-# Compose-Datei). Ein ATTACHED `compose up` als Service-Main-Prozess würde
+# Compose-Datei). Ein ATTACHED compose up als Service-Main-Prozess würde
 # das Compose-Projekt-Lock DAUERHAFT halten und alle weiteren
 # docker-compose-Aufrufe (Verifikation/Status/Logs) endlos blockieren
 # (Live-Fund 2026-11-18: Installer hing in der Verifikation am Lock).
@@ -1114,17 +1128,23 @@ do_install() {
         fi
     fi
 
-    # Debian-Template sicherstellen (13 bevorzugt – Docker unterstützt trixie;
-    # rV-Sortierung nimmt 13 vor 12, Fallback bleibt)
+    # Debian-Template sicherstellen – ARCH-KORREKT (Host-CPU via uname -m).
+    # ProxSmartHome hat beide Arch-Templates im Cache; reine Versions-Sortierung
+    # (rV) nimmt das neuere arm64 auf einem amd64-Host → Spawn-Fail. Innerhalb
+    # der passenden Architektur gilt: 13 vor 12 (rV), Fallback bleibt.
     header "🧱 Container-Template"
-    local template=""
-    template=$(pveam list local 2>/dev/null | awk '{print $1}' | grep -o 'debian-1[23]-standard[^ ]*' | sort -rV | head -1 || true)
+    local template="" CT_ARCH=""
+    CT_ARCH=$(detect_host_arch)
+    info "Host-Architektur: $CT_ARCH"
+    template=$(pveam list local 2>/dev/null | awk '{print $1}' | grep -o 'debian-1[23]-standard[^ ]*' \
+               | grep -E "_${CT_ARCH}\.tar\.zst$" | sort -rV | head -1 || true)
     if [[ -z "$template" ]]; then
-        info "Kein Debian-12/13-Template vorhanden – lade es herunter ..."
+        info "Kein Debian-12/13-${CT_ARCH}-Template im Cache – lade es herunter ..."
         pveam update
-        template=$(pveam available --section system 2>/dev/null | grep -o 'debian-1[23]-standard[^ ]*' | sort -rV | head -1 || true)
+        template=$(pveam available --section system 2>/dev/null | grep -o 'debian-1[23]-standard[^ ]*' \
+                   | grep -E "_${CT_ARCH}\.tar\.zst$" | sort -rV | head -1 || true)
         if [[ -z "$template" ]]; then
-            die "Kein debian-12/13-standard-Template gefunden (pveam available leer?)."
+            die "Kein debian-12/13-standard-Template für ${CT_ARCH} gefunden (pveam available leer?).\n  Prüfe: pveam available --section system | grep standard"
         fi
         pveam download local "$template"
     fi
@@ -1179,6 +1199,15 @@ do_install() {
         --start 1 \
         --password "$CT_PASSWORD" \
         "${ssh_keys_args[@]}"
+    # pct create --start 1 meldet Exit 0, AUCH wenn der Spawn fehlschlägt
+    # (Live-Fund 2026-11-19, CT 211: "sync_wait: 34 ... Failed to spawn" im
+    # pct-Output, dann 60 s sinnloser IP-Poll). Deshalb Status EXPLIZIT prüfen.
+    sleep 2
+    local cstate=""
+    cstate=$(pct status "$CT_ID" 2>/dev/null | awk '{print $2}' || true)
+    if [[ "$cstate" != "running" ]]; then
+        die "Container $CT_ID startet nicht (Status: ${cstate:-unbekannt} – pct create meldete trotzdem Exit 0).\n  Typische Ursache: Template-Architektur ≠ Host-CPU (Install-Suche ist jetzt arch-korrekt via uname -m).\n  Details im pct-Output oben (sync_wait/Failed to spawn) und in: grep -i 'lxc-start' /var/log/syslog | tail -20\n  Aufräumen: pct destroy $CT_ID --purge\n  Danach Installer erneut ausführen (bei bestehendem CT mit --force)."
+    fi
     ok "Container $CT_ID erstellt und gestartet"
 
     wait_for_ct_network "$CT_ID"
