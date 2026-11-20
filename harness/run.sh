@@ -383,7 +383,13 @@ case "$sub" in
                 [[ -f "$HS/docker_config_fail" ]] && exit 1
                 exit 0 ;;
             pull)   exit 0 ;;
-            up)     touch "$HS/stack_up"; exit 0 ;;
+            up)
+                if [[ -f "$HS/compose_up_fail" ]]; then
+                    echo "Container novu-mongodb Error dependency mongodb failed to start" >&2
+                    echo "dependency failed to start: container novu-mongodb is unhealthy" >&2
+                    exit 1
+                fi
+                touch "$HS/stack_up"; exit 0 ;;
             stop)   rm -f "$HS/stack_up"; exit 0 ;;
             ps)
                 [[ -f "$HS/ps_empty" ]] && exit 0
@@ -394,6 +400,11 @@ case "$sub" in
             logs)   echo "mock-compose-log-line"; exit 0 ;;
             *)      exit 0 ;;
         esac ;;
+    logs)
+        # `docker logs --tail 25 novu-mongodb` (Mongo-Diagnose bei Stack-Fehler)
+        echo "WARNING: MongoDB 5.0+ requires a CPU with AVX support"
+        echo "/usr/local/bin/docker-entrypoint.sh: line 416: 26 Illegal instruction"
+        exit 0 ;;
     *) echo "mock-docker: $sub (ignored)"; exit 0 ;;
 esac
 EOF
@@ -510,8 +521,11 @@ reset_state() {
     echo "x86_64" > "$HS/host_arch"      # Default: amd64-Host (aarch64-Cases setzen um)
 }
 run_installer() {
+    # NOVU_FORCE_NO_AVX: Test-Haken des Installers (CPU ohne AVX simulieren),
+    # muss durch env -i durchgereicht werden.
     ( unshare -rm env -i PATH="$HOSTBIN:/usr/sbin:/usr/bin:/sbin:/bin" \
         HARNESS_STATE="$HS" HOME=/root TERM=dumb LANG=C.UTF-8 \
+        ${NOVU_FORCE_NO_AVX:+NOVU_FORCE_NO_AVX="$NOVU_FORCE_NO_AVX"} \
         bash "$SCRIPT" "$@" > "$CUR_DIR/out.log" 2>&1 )
     echo $?
 }
@@ -704,7 +718,8 @@ assert_fcontains "$COMPOSE_PATH" 'image: "${IMAGE_PREFIX}/api:${NOVU_VERSION}"'
 assert_fcontains "$COMPOSE_PATH" 'image: "${IMAGE_PREFIX}/worker:${NOVU_VERSION}"'
 assert_fcontains "$COMPOSE_PATH" 'image: "${IMAGE_PREFIX}/ws:${NOVU_VERSION}"'
 assert_fcontains "$COMPOSE_PATH" 'image: "${IMAGE_PREFIX}/dashboard:${NOVU_VERSION}"'
-assert_fcontains "$COMPOSE_PATH" 'image: "mongo:8.0.17"'
+assert_fcontains "$COMPOSE_PATH" 'image: "mongo:${MONGO_VERSION}"'   # Pin aus .env
+assert_fcontains "$ENV_PATH" "MONGO_VERSION=8.0.17"
 assert_fcontains "$COMPOSE_PATH" 'image: "redis:alpine"'
 assert_fcontains "$COMPOSE_PATH" '"${UI_PORT}:4000"'
 assert_fcontains "$COMPOSE_PATH" '"${API_PORT}:${API_PORT}"'
@@ -771,6 +786,38 @@ t "Install mit --version Pin-Override"
 reset_state; unseed_inner_tools
 ec=$(run_installer --version 3.21.0); assert_exit 0 "$ec"
 assert_fcontains "$ENV_PATH" "NOVU_VERSION=3.21.0"
+
+t "Install mit --mongo-version 4.4.29 (AVX-freie Linie)"
+reset_state; unseed_inner_tools
+ec=$(run_installer --mongo-version 4.4.29); assert_exit 0 "$ec"
+assert_fcontains "$ENV_PATH" "MONGO_VERSION=4.4.29"
+assert_fcontains "$COMPOSE_PATH" 'image: "mongo:${MONGO_VERSION}"'
+
+t "AVX fehlt + Mongo >= 5 → Abbruch VOR Container-Anlage (Live-Grube CT 204)"
+reset_state; unseed_inner_tools
+ec=$(NOVU_FORCE_NO_AVX=1 run_installer); assert_exit 1 "$ec"
+assert_out "Diese CPU hat KEIN AVX"
+assert_out "Option A – auf anderer Hardware installieren (EMPFOHLEN)"
+assert_out "--mongo-version 4.4.29"
+assert_no_calls "pct create"
+
+t "AVX fehlt + --mongo-version 4.4.29 → läuft durch (Notausgang)"
+reset_state; unseed_inner_tools
+ec=$(NOVU_FORCE_NO_AVX=1 run_installer --mongo-version 4.4.29); assert_exit 0 "$ec"
+assert_fcontains "$ENV_PATH" "MONGO_VERSION=4.4.29"
+
+t "Compose-Start scheitert → Mongo-Logs + AVX-Hinweis (Live-Grube Exit 132)"
+seed_ct
+touch "$HS/compose_up_fail"
+ec=$(run_installer --update); assert_exit 1 "$ec"
+assert_out "--- docker logs novu-mongodb (letzte 25 Zeilen) ---"
+assert_out "docker compose up -d fehlgeschlagen"
+assert_out "Illegal instruction"
+rm -f "$HS/compose_up_fail"
+
+t "--mongo-version ungültig → die"
+ec=$(run_installer --mongo-version abc); assert_exit 1 "$ec"
+assert_out "Ungültige MongoDB-Version: 'abc'"
 
 t "Install mit statischer IP (--ip)"
 reset_state; unseed_inner_tools

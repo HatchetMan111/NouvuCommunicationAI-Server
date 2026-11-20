@@ -4,6 +4,20 @@ Ein-Klick-Installer für [Novu](https://github.com/novuhq/novu) (Open-Source-Not
 
 Novu macht Multi-Channel-Notifications (In-App, E-Mail, SMS, Push, Chat) über eine einzige API: Workflows im Dashboard bauen, Environment-API-Key in die eigene App, `POST /v1/events/trigger` senden. Läuft komplett lokal – keine Cloud-Pflicht, Telemetrie (Sentry/New Relic) default AUS.
 
+## ⚠️ Voraussetzung: CPU mit AVX
+
+MongoDB 5.0+ (Default hier: **8.0.17**) verlangt zwingend das CPU-Flag **AVX**. Auf CPUs ohne AVX (z. B. Intel Pentium/Core-2-Generation, ältere Atoms) startet `mongod` mit `Illegal instruction` (Exit 132), wird nie healthy und bricht den ganzen Stack ab. **Der Installer prüft das vorab** und verweigert mit klarer Meldung den Start.
+
+Prüfen, ob deine CPU AVX hat:
+```bash
+grep -m1 '^flags' /proc/cpuinfo | grep -ow avx
+```
+AVX haben praktisch alle Core i3/i5/i7, Ryzen und Xeon ab ca. 2013.
+
+**Wenn AVX fehlt:**
+- **Empfohlen:** Novu auf Hardware mit AVX installieren (anderer Proxmox-Host / anderer CT-Wirt).
+- **Notausgang (nur zum Testen):** `… --mongo-version 4.4.29` — letzte AVX-freie MongoDB-Linie. Achtung: 4.4 ist **EOL** (keine Security-Updates) und von Novu 3.x **nicht freigegeben** (offiziell Mongo 5+ / Atlas M20+). Novus Datenzugriff degradiert ohne Replica Set sauber auf nicht-transaktionale Writes (`libs/dal/.../base-repository.ts`), funktionieren kann es also — für Dauerbetrieb mit sensiblen Daten ist es trotzdem nicht empfohlen.
+
 ## 🚀 Installation (Einzeiler, auf dem Proxmox-Host als root)
 
 ```bash
@@ -54,7 +68,7 @@ bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuComm
 bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/NouvuCommunicationAI-Server/main/install/novu.sh)" --debug
 ```
 
-Weitere Optionen: `--id`, `--hostname`, `--storage`, `--rootfs`, `--cores`, `--memory`, `--swap`, `--bridge`, `--ip`, `--gateway`, `--password`, `--sshkey`, `--port`, `--version`, `--force` – siehe `--help`.
+Weitere Optionen: `--id`, `--hostname`, `--storage`, `--rootfs`, `--cores`, `--memory`, `--swap`, `--bridge`, `--ip`, `--gateway`, `--password`, `--sshkey`, `--port`, `--version`, `--mongo-version`, `--force` – siehe `--help`.
 
 ## 📣 Erste Schritte in Novu
 

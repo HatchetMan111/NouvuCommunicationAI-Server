@@ -30,12 +30,17 @@
 set -Eeuo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="1.0.1"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
+INSTALLER_VERSION="1.0.2"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
 APP_NAME="novu"
 UPSTREAM_OWNER="novuhq"
 UPSTREAM_REPO="novu"
 NOVU_VERSION="3.20.0"       # GEPINNT (offizielle ghcr.io-Release-Images, kein Build im CT)
 IMAGE_PREFIX="ghcr.io/novuhq/novu"
+MONGO_VERSION="8.0.17"      # MongoDB >= 5.0 BRAUCHT AVX (CPU-Flag)! Auf AVX-losen
+                            # CPUs (z. B. Pentium/Core-2-Generation) startet mongod
+                            # mit "Illegal instruction" (Exit 132). Notausgang:
+                            # --mongo-version 4.4.29 (letzte AVX-freie Linie, EOL,
+                            # von Novu 3.x NICHT freigegeben – nur zum Testen).
 APP_DIR="/opt/novu"         # Projektverzeichnis im Container
 CT_ID=""                    # leer = automatisch nächste freie ID ab ID_SCAN_START
 ID_SCAN_START=200
@@ -160,6 +165,33 @@ detect_host_arch() {
         aarch64|armv8*) echo "arm64" ;;
         *) die "Unbekannte Host-Architektur '$m' – passendes Debian-Template nicht bestimmbar." ;;
     esac
+}
+
+detect_cpu_avx() {
+    # MongoDB 5.0+ braucht zwingend AVX (CPU-Flag). Live-Fund 2026-11-20,
+    # CT 204 ProxSmartHome (Pentium G4650, AVX-los): mongod stirbt beim Start
+    # mit "Illegal instruction" (Exit 132), der Healthcheck wird nie grün und
+    # die Compose startet api/worker/ws/dashboard gar nicht erst.
+    # Der Host-CPU fehlt AVX → im LXC (gleiche CPU) fehlt es genauso, und eine
+    # VM hilft nicht (CPU-Flags kommen vom Host).
+    # NOVU_FORCE_NO_AVX=1 ist der Test-/Support-Haken für den Harness.
+    if [[ "${NOVU_FORCE_NO_AVX:-0}" == "1" ]]; then
+        echo "no"
+        return 0
+    fi
+    if grep -m1 '^flags' /proc/cpuinfo 2>/dev/null | grep -qw avx; then
+        echo "yes"
+    else
+        echo "no"
+    fi
+    return 0
+}
+
+mongo_needs_avx() {
+    # MongoDB >= 5.0 (5.x, 6.x, 7.x, 8.x) – 4.x ist die letzte AVX-freie Linie.
+    local v="${1%%.*}"
+    [[ "$v" =~ ^[0-9]+$ ]] || return 1
+    [[ "$v" -ge 5 ]]
 }
 
 find_ct_id_by_hostname() {
@@ -311,6 +343,7 @@ parse_args() {
             --sshkey)        CT_SSHKEY="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --port)          UI_PORT="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --version)       NOVU_VERSION="${args[$((i+1))]:-}"; i=$((i+2)) ;;
+            --mongo-version) MONGO_VERSION="${args[$((i+1))]:-}"; i=$((i+2)) ;;
             --force)         FORCE_RECREATE=true; i=$((i+1)) ;;
             --yes|-y)        ASSUME_YES=true; i=$((i+1)) ;;
             --update)        UPDATE=true; i=$((i+1)) ;;
@@ -332,6 +365,27 @@ parse_args() {
         die "Ungültige Version: '$NOVU_VERSION' (erwartet z. B. 3.20.0)"
     fi
     NOVU_VERSION="${NOVU_VERSION#v}"
+    if ! [[ "$MONGO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        die "Ungültige MongoDB-Version: '$MONGO_VERSION' (erwartet z. B. 8.0.17 oder 4.4.29)"
+    fi
+    # AVX-Blockade VOR jeder Container-Arbeit abfangen (sonst: 2–5 min Images
+    # ziehen, dann Exit 132 von mongod – Live-Fund 2026-11-20, CT 204).
+    if mongo_needs_avx "$MONGO_VERSION" && [[ "$(detect_cpu_avx)" != "yes" ]]; then
+        err "Diese CPU hat KEIN AVX – MongoDB ${MONGO_VERSION} startet hier nicht (Illegal instruction, Exit 132)."
+        echo ""
+        echo "  Option A – auf anderer Hardware installieren (EMPFOHLEN):"
+        echo "    AVX haben praktisch alle Core i3/i5/i7, Ryzen und Xeon ab ~2013."
+        echo "    Prüfen:  grep -m1 '^flags' /proc/cpuinfo | grep -ow avx"
+        echo ""
+        echo "  Option B – auf DIESER Hardware mit MongoDB 4.4 (letzte AVX-freie Linie):"
+        echo "    Achtung: 4.4 ist EOL (kein Security-Update mehr) und von Novu 3.x"
+        echo "    NICHT freigegeben (offiziell Mongo 5+/Atlas M20+). Nur zum Testen,"
+        echo "    nicht für Dauerbetrieb mit sensiblen Daten empfohlen."
+        echo -e "    ${ONE_LINER} --mongo-version 4.4.29"
+        echo ""
+        echo "  CT aufräumen (falls schon angelegt): pct destroy <CT-ID> --purge"
+        exit 1
+    fi
 }
 
 print_help() {
@@ -357,6 +411,10 @@ Optionen (hinter dem schließenden Anführungszeichen anhängen, z. B. ... " --i
   --sshkey PFAD    Public-Key-Datei oder URL – ssh-key-Login als root im CT
   --port PORT      Web-UI-Port im Container (Default: 4000; API fix 3000, WS fix 3002)
   --version V      Novu-Version (Default: 3.20.0, gepinnt auf ghcr.io-Release-Images)
+  --mongo-version V  MongoDB-Version (Default: 8.0.17 – BRAUCHT AVX!)
+                   Auf CPUs ohne AVX startet mongod nicht (Exit 132); dann hilft
+                   nur --mongo-version 4.4.29 (EOL, von Novu nicht freigegeben)
+                   oder andere Hardware. Der Installer prüft das vorher.
   --force          Vorhandenen Container mit gleichem Hostname löschen und neu anlegen
   --yes / -y       Rückfragen überspringen
   --update         Novu im bestehenden Container aktualisieren (Images neu ziehen)
@@ -394,6 +452,7 @@ die(){ err "$1"; exit 1; }
 
 : "${APP_DIR:?APP_DIR fehlt (env)}"
 : "${NOVU_VERSION:?NOVU_VERSION fehlt (env)}"
+: "${MONGO_VERSION:?MONGO_VERSION fehlt (env)}"
 : "${UI_PORT:?UI_PORT fehlt (env)}"
 : "${API_PORT:?API_PORT fehlt (env)}"
 : "${WS_PORT:?WS_PORT fehlt (env)}"
@@ -441,7 +500,7 @@ name: novu
 
 services:
   mongodb:
-    image: "mongo:8.0.17"
+    image: "mongo:${MONGO_VERSION}"
     container_name: novu-mongodb
     restart: unless-stopped
     logging:
@@ -719,6 +778,9 @@ echo ">>> .env erzeugen/prüfen (Secrets bleiben bei Update erhalten) ..."
 # Novu-Version (gepinnt) – wird bei JEDEM Lauf auf den Installer-Pin gesetzt,
 # damit ein --update die Version sauber nachzieht.
 dotenv_set NOVU_VERSION "$NOVU_VERSION"
+# MongoDB-Pin (Compose interpoliert ${MONGO_VERSION} aus dieser .env) – wird bei
+# jedem Lauf gesetzt, damit ein --mongo-version-Wechsel sauber durchschlägt.
+dotenv_set MONGO_VERSION "$MONGO_VERSION"
 if [[ -z "$(dotenv_get JWT_SECRET)" ]]; then
     dotenv_set JWT_SECRET "$(generate_secret 32)"
     echo "    JWT_SECRET erzeugt"
@@ -869,7 +931,14 @@ systemctl stop novu >/dev/null 2>&1 || true
 docker compose pull
 
 echo ">>> Novu-Stack starten (docker compose up -d) ..."
-docker compose up -d
+if ! docker compose up -d; then
+    # Häufigste Ursache: mongod startet nicht (AVX fehlt → Exit 132, oder
+    # Healthcheck-Timeout beim ersten Index-Build). Mongo-Logs IMMER zeigen,
+    # sonst sieht man nur "dependency failed to start".
+    echo "--- docker logs novu-mongodb (letzte 25 Zeilen) ---"
+    docker logs --tail 25 novu-mongodb 2>&1 || true
+    die "docker compose up -d fehlgeschlagen (siehe Ausgabe + Logs oben).\n  Häufigste Ursache: MongoDB startet nicht – bei 'Illegal instruction' fehlt der CPU ein AVX-Flag\n  (Mongo 5.0+ verlangt AVX; dann nur Hardware mit AVX oder --mongo-version 4.4.29).\n  Debug: cd $APP_DIR && docker compose ps -a && docker logs novu-mongodb --tail 50"
+fi
 
 echo ">>> systemd-Service starten (übernimmt den laufenden Stack) ..."
 systemctl start novu
@@ -886,7 +955,9 @@ for _ in $(seq 1 60); do
     sleep 5
 done
 if [[ -z "$API_OK" ]]; then
-    die "API antwortet nicht mit 200 auf /v1/health-check (letzter Code: ${code:-keiner}).\n  Debug: cd $APP_DIR && docker compose ps && docker compose logs --tail 50 api"
+    echo "--- docker logs novu-mongodb (letzte 25 Zeilen) ---"
+    docker logs --tail 25 novu-mongodb 2>&1 || true
+    die "API antwortet nicht mit 200 auf /v1/health-check (letzter Code: ${code:-keiner}).\n  Debug: cd $APP_DIR && docker compose ps -a && docker compose logs --tail 50 api\n  Mongo-Verdacht (mongod tot → api bleibt unhealthy): docker logs novu-mongodb --tail 50"
 fi
 ok "API gesund (HTTP 200)"
 
@@ -948,6 +1019,7 @@ run_inner_setup() {
         apply_ui_port=1
     fi
     pct exec "$ct_id" -- env APP_DIR="$APP_DIR" NOVU_VERSION="$NOVU_VERSION" \
+        MONGO_VERSION="$MONGO_VERSION" \
         UI_PORT="$UI_PORT" API_PORT="$API_PORT" WS_PORT="$WS_PORT" \
         HOST_DNS="${HOST_DNS:-1.1.1.1}" IMAGE_PREFIX="$IMAGE_PREFIX" APPLY_UI_PORT="$apply_ui_port" \
         bash -c 'set -o pipefail; bash /root/setup-inner.sh 2>&1 | tee /var/log/novu-setup.log'
@@ -1073,6 +1145,7 @@ print_summary() {
         echo -e "  ${GREEN}  🔑 Root-PW:       ${CT_PASSWORD}${NC}"
     fi
     echo -e "  ${GREEN}  🔧 Installer:     v${INSTALLER_VERSION} (Novu ${NOVU_VERSION}, gepinnt – upstream ${UPSTREAM_OWNER}/${UPSTREAM_REPO})${NC}"
+    echo -e "  ${GREEN}  🗄️  MongoDB:       ${MONGO_VERSION}$(mongo_needs_avx "$MONGO_VERSION" && echo ' (braucht AVX)' || echo ' (AVX-frei)')${NC}"
     echo -e "  ${GREEN}${BOLD}════════════════════════════════════════════════════════════${NC}"
     echo ""
     echo -e "  ${CYAN}Erste Schritte:${NC}"
@@ -1312,12 +1385,16 @@ do_status() {
         warn "Stack:     keine Container mit Projekt-Label novu (Stack noch nie gestartet?)"
     fi
 
-    local version reg ip code=""
+    local version mversion reg ip code=""
     version=$(pct exec "$ct_id" -- sed -n 's/^NOVU_VERSION=//p' "${APP_DIR}/.env" 2>/dev/null | head -1 || true)
     if [[ -n "$version" ]]; then
         ok "Version:   Novu ${version}"
     else
         warn "Version:   unbekannt (${APP_DIR}/.env ohne NOVU_VERSION)"
+    fi
+    mversion=$(pct exec "$ct_id" -- sed -n 's/^MONGO_VERSION=//p' "${APP_DIR}/.env" 2>/dev/null | head -1 || true)
+    if [[ -n "$mversion" ]]; then
+        ok "MongoDB:   ${mversion}$(mongo_needs_avx "$mversion" && echo ' (braucht AVX)' || echo ' (AVX-frei)')"
     fi
     reg=$(pct exec "$ct_id" -- sed -n 's/^DISABLE_USER_REGISTRATION=//p' "${APP_DIR}/.env" 2>/dev/null | head -1 || true)
     if [[ "$reg" == "true" ]]; then
